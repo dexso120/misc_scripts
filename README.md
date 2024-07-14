@@ -1,2 +1,2 @@
-# misc_scripts
- Some scripts created for ad hoc tasks.
+# Random Script Collection
+ Collection of my own scripts. Mostly just for future reference.
