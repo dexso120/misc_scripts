@@ -13,7 +13,11 @@ ForEach ($File in $Files){
 
 # Then replace the filenames in the markdown file
 
-$MarkDownFilePath = ".\WriteUp.md"
+$MarkDownFileName = Read-Host "Enter full markdown filename (e.g. Writeup.md):"
+
+$ImageFolder = Read-Host "Enter screenshot folder name (under /assets/img/):"
+
+$MarkDownFilePath = ".\$MarkDownFileName"
 
 $MarkDownContent = Get-Content -Path $MarkDownFilePath
 
@@ -23,7 +27,7 @@ ForEach ($line in $MarkDownContent){
     if ($line -match $regex){
         Write-Host "Line match: $($line)"
         $filename = $line.split("/")[-1].split("[[")[-1].split("]]")[0]
-        $newline = "![Screenshots](./Screenshots/$filename)"
+        $newline = "![Screenshot](/assets/img/$ImageFolder/$filename)"
         #Write-Host $newline
         $new_content = $(Get-Content -Path $MarkDownFilePath).replace($line, $newline)
         $new_content | Set-Content -Path $MarkDownFilePath
