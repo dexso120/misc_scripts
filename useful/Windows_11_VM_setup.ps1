@@ -35,7 +35,7 @@ New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Nam
 # Download PsExec
 $tools_path = 'C:\Tools\'
 $pstools_path = 'C:\Tools\pstools'
-If (Test-Path $pstools_path){
+If (-Not (Test-Path $pstools_path)){
 	New-Item -ItemType Directory -Path $tools_path
 	New-Item -ItemType Directory -Path $pstools_path
 	Invoke-WebRequest https://download.sysinternals.com/files/PSTools.zip -outfile $tools_path'PsTools.zip'
