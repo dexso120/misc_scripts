@@ -26,11 +26,23 @@ New-ItemProperty -Path $theme_path_lm -Name $name -Value $value -PropertyType DW
 New-ItemProperty -Path $theme_path_cu -Name $name -Value $value -PropertyType DWORD -Force
 
 # Disable Windows Auto Update
-Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name NoAutoUpdate -Value 1 -Force
+$windows_update_path_lm = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+If (!(Test-Path $windows_update_path_lm)){
+    New-Item -Path $windows_update_path_lm -Force | Out-Null
+}
+Set-ItemProperty -Path $windows_update_path_lm -Name NoAutoUpdate -Value 1 -Force
 
 # Disable Windows Defender
 Set-MpPreference -DisableRealtimeMonitoring $true
 New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name DisableAntiSpyware -Value 1 -PropertyType DWORD -Force
+
+$realtime_proection_path_lm = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"
+If (!(Test-Path $realtime_proection_path_lm)){
+    New-Item -Path $realtime_proection_path_lm -Force | Out-Null
+}
+New-ItemProperty -Path $realtime_proection_path_lm -Name DisableBehaviorMonitoring -Value 1 -PropertyType DWORD -Force
+New-ItemProperty -Path $realtime_proection_path_lm -Name DisableOnAccessProtection -Value 1 -PropertyType DWORD -Force
+New-ItemProperty -Path $realtime_proection_path_lm -Name DisableRealtimeMonitoring -Value 1 -PropertyType DWORD -Force
 
 # Download PsExec
 $tools_path = 'C:\Tools\'
