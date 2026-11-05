@@ -9,7 +9,10 @@
 #
 # Usage (as root):  ./setup-debian.sh
 # The script asks which user should be added to the sudo group.
-# Leave the username empty to skip all user-specific steps.
+# Leave the username empty to skip the sudo-group and SSH-key steps.
+# After you pick applications, if Neovim/NvChad or Docker is selected,
+# you are asked which user should receive the per-user setup
+# (NvChad config, Nerd Font, docker group).
 
 set -euo pipefail
 
@@ -25,7 +28,36 @@ export DEBIAN_FRONTEND=noninteractive
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
-run_as_user() { runuser -u "$TARGET_USER" -- "$@"; }
+# run_as <user> <command...> - run a command as the given user
+run_as() { local u="$1"; shift; runuser -u "$u" -- "$@"; }
+
+# pick_user <title> <message> [default]
+# Prompts for a username via whiptail and sets PICKED_USER.
+# Empty input = skip (PICKED_USER is empty). Offers to create unknown users.
+pick_user() {
+  local title="$1" msg="$2" default="${3:-}"
+  while true; do
+    if ! PICKED_USER=$(whiptail --title "$title" --inputbox "$msg" 12 66 "$default" \
+      3>&1 1>&2 2>&3); then
+      echo "Cancelled."
+      exit 1
+    fi
+
+    [ -z "$PICKED_USER" ] && return 0
+
+    if [ "$PICKED_USER" = "root" ]; then
+      whiptail --msgbox "Please enter a non-root username (or leave empty to skip)." 8 60
+      continue
+    fi
+
+    id "$PICKED_USER" >/dev/null 2>&1 && return 0
+
+    if whiptail --yesno "User '$PICKED_USER' does not exist. Create it now?" 10 60; then
+      adduser --gecos "" "$PICKED_USER"   # prompts for a password
+      return 0
+    fi
+  done
+}
 
 #------------------------------------------------------------------------------
 # 1. Base packages, then ask which user to configure
@@ -34,34 +66,13 @@ log "Updating package lists and installing base packages"
 apt-get update
 apt-get install -y sudo whiptail curl ca-certificates
 
-while true; do
-  if ! TARGET_USER=$(whiptail --title "User setup" \
-    --inputbox "Enter the username to add to the sudo group.\n\nLeave EMPTY to skip (no user will be configured)." 12 64 \
-    3>&1 1>&2 2>&3); then
-    echo "Cancelled."
-    exit 1
-  fi
+pick_user "User setup" \
+"Enter the username to add to the sudo group.\n\nLeave EMPTY to skip adding a user to sudo and creating an SSH key."
+TARGET_USER="$PICKED_USER"
 
-  # Empty input = skip all user-specific steps
-  if [ -z "$TARGET_USER" ]; then
-    log "No username entered - skipping sudo, SSH key and per-user setup"
-    break
-  fi
-
-  if [ "$TARGET_USER" = "root" ]; then
-    whiptail --msgbox "Please enter a non-root username (or leave empty to skip)." 8 60
-    continue
-  fi
-
-  if id "$TARGET_USER" >/dev/null 2>&1; then
-    break
-  fi
-
-  if whiptail --yesno "User '$TARGET_USER' does not exist. Create it now?" 10 60; then
-    adduser --gecos "" "$TARGET_USER"   # prompts for a password
-    break
-  fi
-done
+if [ -z "$TARGET_USER" ]; then
+  log "No username entered - skipping sudo group and SSH key steps"
+fi
 
 TARGET_HOME=""
 KEY_FILE=""
@@ -70,29 +81,38 @@ if [ -n "$TARGET_USER" ]; then
 
   log "Adding $TARGET_USER to the sudo group"
   usermod -aG sudo "$TARGET_USER"
+else
+  log "Skipping step 1 (sudo group) - no username given"
 fi
 
 #------------------------------------------------------------------------------
 # 2. SSH server
 #------------------------------------------------------------------------------
-log "Installing and enabling the SSH server"
-apt-get install -y openssh-server
-systemctl enable --now ssh
+SSH_ENABLED=0
+if whiptail --title "SSH server" --yesno \
+  "Install and enable the SSH server?" 8 50; then
+  log "Installing and enabling the SSH server"
+  apt-get install -y openssh-server
+  systemctl enable --now ssh
+  SSH_ENABLED=1
+else
+  log "Skipping SSH server installation"
+fi
 
 #------------------------------------------------------------------------------
 # 3. SSH key for the user
 #------------------------------------------------------------------------------
 if [ -z "$TARGET_USER" ]; then
-  log "No user selected - skipping SSH key creation"
+  log "Skipping step 3 (SSH key) - no username given"
 else
   KEY_FILE="$TARGET_HOME/.ssh/id_ed25519"
   if [ -f "$KEY_FILE" ]; then
     log "SSH key already exists at $KEY_FILE - skipping"
   else
     log "Creating SSH key for $TARGET_USER"
-    run_as_user mkdir -p "$TARGET_HOME/.ssh"
+    run_as "$TARGET_USER" mkdir -p "$TARGET_HOME/.ssh"
     chmod 700 "$TARGET_HOME/.ssh"
-    run_as_user ssh-keygen -t ed25519 -N "" -C "${TARGET_USER}@$(hostname)" -f "$KEY_FILE"
+    run_as "$TARGET_USER" ssh-keygen -t ed25519 -N "" -C "${TARGET_USER}@$(hostname)" -f "$KEY_FILE"
   fi
 fi
 
@@ -121,6 +141,23 @@ done <<< "$CHOICES"
 
 if [ -n "${WANT[all]:-}" ]; then
   for app in nvim vim git golang docker; do WANT["$app"]=1; done
+fi
+
+#------------------------------------------------------------------------------
+# Which user gets the per-user setup? (asked only when it is needed)
+#------------------------------------------------------------------------------
+APP_USER=""
+APP_HOME=""
+if [ -n "${WANT[nvim]:-}" ] || [ -n "${WANT[docker]:-}" ]; then
+  pick_user "Application user" \
+"Enter the username to install the selected applications for:\n  - NvChad config + Nerd Font (Neovim)\n  - docker group membership (Docker)\n\nLeave EMPTY to skip these per-user parts." \
+    "$TARGET_USER"
+  APP_USER="$PICKED_USER"
+  if [ -n "$APP_USER" ]; then
+    APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
+  else
+    log "No application user given - skipping NvChad/Nerd Font and docker group"
+  fi
 fi
 
 #------------------------------------------------------------------------------
@@ -162,36 +199,36 @@ install_nvim() {
   rm -f "$TMP_TAR"
   ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim
 
-  if [ -z "$TARGET_USER" ]; then
-    echo "Neovim installed. No user selected - skipping NvChad config and Nerd Font."
+  if [ -z "$APP_USER" ]; then
+    echo "Neovim installed. No user given - skipping NvChad config and Nerd Font."
     return 0
   fi
 
   # NvChad starter config
-  NVIM_CFG="$TARGET_HOME/.config/nvim"
+  NVIM_CFG="$APP_HOME/.config/nvim"
   if [ -d "$NVIM_CFG" ]; then
     BACKUP="${NVIM_CFG}.bak.$(date +%Y%m%d%H%M%S)"
     echo "Existing Neovim config found - backing up to $BACKUP"
     mv "$NVIM_CFG" "$BACKUP"
   fi
-  run_as_user mkdir -p "$TARGET_HOME/.config"
-  run_as_user git clone --depth 1 https://github.com/NvChad/starter "$NVIM_CFG"
+  run_as "$APP_USER" mkdir -p "$APP_HOME/.config"
+  run_as "$APP_USER" git clone --depth 1 https://github.com/NvChad/starter "$NVIM_CFG"
   rm -rf "$NVIM_CFG/.git"
 
   # Nerd Font (0xProto) for NvChad icons
   log "Installing 0xProto Nerd Font"
   FONT_URL="https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/0xProto.zip"
-  FONT_DIR="$TARGET_HOME/.local/share/fonts/0xProto"
+  FONT_DIR="$APP_HOME/.local/share/fonts/0xProto"
   TMP_ZIP="$(mktemp --suffix=.zip)"
 
   curl -fsSL "$FONT_URL" -o "$TMP_ZIP"
-  run_as_user mkdir -p "$FONT_DIR"
+  run_as "$APP_USER" mkdir -p "$FONT_DIR"
   unzip -o -q "$TMP_ZIP" -d "$FONT_DIR"
   rm -f "$TMP_ZIP"
-  chown -R "$TARGET_USER":"$(id -gn "$TARGET_USER")" "$TARGET_HOME/.local"
-  run_as_user fc-cache -f "$FONT_DIR"
+  chown -R "$APP_USER":"$(id -gn "$APP_USER")" "$APP_HOME/.local"
+  run_as "$APP_USER" fc-cache -f "$FONT_DIR"
 
-  echo "NvChad installed. Run 'nvim' once to let it download plugins."
+  echo "NvChad installed for user '$APP_USER'. Run 'nvim' once to let it download plugins."
   echo "Font installed to $FONT_DIR."
   echo "Set your terminal's font to '0xProto Nerd Font' (on the machine whose"
   echo "terminal you use - e.g. your SSH client's computer, if you connect remotely)."
@@ -215,10 +252,10 @@ install_docker() {
     docker-buildx-plugin docker-compose-plugin
 
   systemctl enable --now docker
-  if [ -n "$TARGET_USER" ]; then
-    usermod -aG docker "$TARGET_USER"
+  if [ -n "$APP_USER" ]; then
+    usermod -aG docker "$APP_USER"
   else
-    echo "No user selected - not adding anyone to the 'docker' group."
+    echo "No user given - not adding anyone to the 'docker' group."
   fi
 }
 
@@ -235,15 +272,26 @@ install_docker() {
 # Summary
 #------------------------------------------------------------------------------
 log "All done!"
-echo "  - SSH server running (systemctl status ssh)"
+if [ "$SSH_ENABLED" -eq 1 ]; then
+  echo "  - SSH server running (systemctl status ssh)"
+else
+  echo "  - SSH server not installed"
+fi
 if [ -n "$TARGET_USER" ]; then
   echo "  - $TARGET_USER added to the 'sudo' group"
   echo "  - SSH public key: ${KEY_FILE}.pub"
   echo
   cat "${KEY_FILE}.pub" 2>/dev/null || true
   echo
-  echo "NOTE: Log out and back in (or reboot) for the new group memberships"
-  echo "      (sudo, docker) to take effect."
 else
-  echo "  - No user was configured (no sudo group, SSH key, NvChad or docker group changes)"
+  echo "  - No sudo user given: sudo group and SSH key steps were skipped"
+fi
+if [ -n "$APP_USER" ]; then
+  [ -n "${WANT[nvim]:-}" ]   && echo "  - NvChad + Nerd Font installed for $APP_USER"
+  [ -n "${WANT[docker]:-}" ] && echo "  - $APP_USER added to the 'docker' group"
+fi
+if [ -n "$TARGET_USER" ] || [ -n "$APP_USER" ]; then
+  echo
+  echo "NOTE: Log out and back in (or reboot) for new group memberships"
+  echo "      (sudo, docker) to take effect."
 fi
