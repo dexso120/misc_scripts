@@ -26,6 +26,8 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
+NVM_VERSION="v0.40.3"   # nvm release used by the Node.js installer
+
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
 # run_as <user> <command...> - run a command as the given user
@@ -122,13 +124,14 @@ fi
 if ! CHOICES=$(whiptail --title "Application Installer" \
   --separate-output \
   --checklist "Select applications to install\n(SPACE to toggle, ENTER to confirm):" \
-  20 70 6 \
+  21 70 7 \
   "all"    "Install ALL applications below" OFF \
   "nvim"   "Neovim + NvChad"                OFF \
   "vim"    "Vim editor"                     OFF \
   "git"    "Git version control"            OFF \
   "golang" "Go programming language"        OFF \
   "docker" "Docker Engine"                  OFF \
+  "nodejs" "Node.js via nvm (+ npm, npx)"     OFF \
   3>&1 1>&2 2>&3); then
   echo "Selection cancelled - skipping application installs."
   CHOICES=""
@@ -140,7 +143,7 @@ while IFS= read -r item; do
 done <<< "$CHOICES"
 
 if [ -n "${WANT[all]:-}" ]; then
-  for app in nvim vim git golang docker; do WANT["$app"]=1; done
+  for app in nvim vim git golang docker nodejs; do WANT["$app"]=1; done
 fi
 
 #------------------------------------------------------------------------------
@@ -148,15 +151,15 @@ fi
 #------------------------------------------------------------------------------
 APP_USER=""
 APP_HOME=""
-if [ -n "${WANT[nvim]:-}" ] || [ -n "${WANT[docker]:-}" ]; then
+if [ -n "${WANT[nvim]:-}" ] || [ -n "${WANT[docker]:-}" ] || [ -n "${WANT[nodejs]:-}" ]; then
   pick_user "Application user" \
-"Enter the username to install the selected applications for:\n  - NvChad config + Nerd Font (Neovim)\n  - docker group membership (Docker)\n\nLeave EMPTY to skip these per-user parts." \
+"Enter the username to install the selected applications for:\n  - NvChad config + Nerd Font (Neovim)\n  - docker group membership (Docker)\n  - nvm + Node.js, npm, npx (Node.js)\n\nLeave EMPTY to skip these per-user parts." \
     "$TARGET_USER"
   APP_USER="$PICKED_USER"
   if [ -n "$APP_USER" ]; then
     APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
   else
-    log "No application user given - skipping NvChad/Nerd Font and docker group"
+    log "No application user given - skipping NvChad/Nerd Font, docker group and nvm/Node.js"
   fi
 fi
 
@@ -176,6 +179,42 @@ install_vim() {
 install_golang() {
   log "Installing Go"
   apt-get install -y golang-go
+}
+
+install_nodejs() {
+  log "Installing nvm and Node.js (LTS)"
+
+  if [ -z "$APP_USER" ]; then
+    echo "nvm is installed per user and no user was given - skipping Node.js."
+    return 0
+  fi
+
+  apt-get install -y curl ca-certificates git
+
+  NVM_DIR="$APP_HOME/.nvm"
+  touch "$APP_HOME/.bashrc"
+  chown "$APP_USER":"$(id -gn "$APP_USER")" "$APP_HOME/.bashrc"
+
+  # Official nvm installer; clones nvm to ~/.nvm and adds the loader to ~/.bashrc
+  run_as "$APP_USER" env HOME="$APP_HOME" PROFILE="$APP_HOME/.bashrc" \
+    bash -c "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh | bash"
+
+  # Install the latest LTS Node.js (this also provides npm and npx)
+  run_as "$APP_USER" env HOME="$APP_HOME" NVM_DIR="$NVM_DIR" bash -c '
+    . "$NVM_DIR/nvm.sh"
+    nvm install --lts
+    nvm alias default "lts/*"
+    echo "  nvm:  $(nvm --version)"
+    for tool in node npm npx; do
+      if command -v "$tool" >/dev/null 2>&1; then
+        echo "  $tool: $("$tool" --version)"
+      else
+        echo "  WARNING: $tool not found after installation" >&2
+      fi
+    done
+  '
+
+  echo "nvm and Node.js installed for '$APP_USER'. Open a new shell (or run 'source ~/.bashrc') to use them."
 }
 
 install_nvim() {
@@ -267,6 +306,7 @@ install_docker() {
 [ -n "${WANT[golang]:-}" ] && install_golang
 [ -n "${WANT[nvim]:-}"   ] && install_nvim
 [ -n "${WANT[docker]:-}" ] && install_docker
+[ -n "${WANT[nodejs]:-}" ] && install_nodejs
 
 #------------------------------------------------------------------------------
 # Summary
@@ -289,6 +329,7 @@ fi
 if [ -n "$APP_USER" ]; then
   [ -n "${WANT[nvim]:-}" ]   && echo "  - NvChad + Nerd Font installed for $APP_USER"
   [ -n "${WANT[docker]:-}" ] && echo "  - $APP_USER added to the 'docker' group"
+  [ -n "${WANT[nodejs]:-}" ]  && echo "  - nvm + Node.js LTS (npm, npx) installed for $APP_USER"
 fi
 if [ -n "$TARGET_USER" ] || [ -n "$APP_USER" ]; then
   echo
